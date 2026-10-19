@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#16243A">
+<title>Trascrivi</title>
+<style>
+:root{
+  --paper:#F2F4F1;--card:#FFFFFF;--ink:#16243A;--muted:#5C6B7E;--line:#CBD3DC;
+  --sig:#2A55E5;--on-sig:#FFFFFF;--wave:#B4C2D3;--err:#B3261E;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root{--paper:#0E1726;--card:#152238;--ink:#E7EDF5;--muted:#97A6BA;--line:#27364D;--sig:#7C9CFF;--on-sig:#0E1726;--wave:#2C3E58;--err:#FF8A80}
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 var(--sans);
+  padding:max(20px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) max(28px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left))}
+main{max-width:640px;margin:0 auto}
+h1{font:600 2.4rem/1.1 var(--serif);margin:8px 0 6px;letter-spacing:-.01em}
+.lead{margin:0 0 22px;color:var(--muted)}
+#wave{display:flex;align-items:center;gap:3px;height:88px;margin:0 0 20px}
+#wave i{flex:1;border-radius:3px;background:var(--wave);transition:background .25s}
+#wave i.on{background:var(--sig)}
+.pick{display:flex;flex-direction:column;gap:2px;padding:14px 16px;border:1.5px dashed var(--line);border-radius:14px;background:var(--card);cursor:pointer}
+.pick:focus-within{outline:3px solid var(--sig);outline-offset:2px}
+.pick input{position:absolute;opacity:0;width:1px;height:1px}
+.pick b{font-weight:600}
+.pick span{color:var(--muted);font-size:.9rem}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:.85rem;color:var(--muted)}
+select{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 10px;min-height:48px}
+button{font:inherit;font-weight:600;min-height:48px;padding:0 18px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
+button.go{width:100%;background:var(--sig);color:var(--on-sig);border-color:var(--sig)}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--sig);outline-offset:2px}
+#status{min-height:1.5em;margin:12px 0 18px;color:var(--muted);font-size:.95rem}
+#status.err{color:var(--err)}
+textarea{width:100%;min-height:42vh;resize:vertical;font:1.05rem/1.65 var(--serif);color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+.acts{display:flex;gap:10px;margin-top:12px}
+.acts button{flex:1;padding:0 8px}
+footer{margin-top:26px;font-size:.82rem;color:var(--muted)}
+@media (prefers-reduced-motion:reduce){#wave i{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <h1>Trascrivi</h1>
+  <p class="lead">L’audio resta sul tuo telefono: la trascrizione avviene qui, non su un server.</p>
+
+  <div id="wave" aria-hidden="true"></div>
+
+  <label class="pick">
+    <input id="file" type="file" accept="audio/*,video/*">
+    <b id="fname">Scegli un file audio</b>
+    <span id="fsize">MP3, M4A, WAV, OGG, anche memo vocali e video</span>
+  </label>
+
+  <div class="row">
+    <label class="f">Lingua
+      <select id="lang">
+        <option value="it" selected>Italiano</option>
+        <option value="en">Inglese</option>
+        <option value="es">Spagnolo</option>
+        <option value="fr">Francese</option>
+        <option value="de">Tedesco</option>
+        <option value="auto">Riconosci da sola</option>
+      </select>
+    </label>
+    <label class="f">Precisione
+      <select id="model">
+        <option value="tiny">Tiny (≈ 80 MB, veloce)</option>
+        <option value="base" selected>Base (≈ 150 MB)</option>
+        <option value="small">Small (≈ 450 MB, lenta)</option>
+      </select>
+    </label>
+  </div>
+
+  <button id="go" class="go" disabled>Trascrivi</button>
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <textarea id="out" placeholder="Qui compare il testo, mentre viene trascritto. Puoi correggerlo a mano."></textarea>
+  <div class="acts">
+    <button id="copy" disabled>Copia</button>
+    <button id="txt" disabled>Salva .txt</button>
+    <button id="srt" disabled>Salva .srt</button>
+  </div>
+
+  <footer>Il modello si scarica una sola volta (serve internet); dopo funziona anche senza rete. Tieni lo schermo acceso durante la trascrizione.</footer>
+</main>
+
+<script type="module">
+import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3";
+
+const $ = s => document.querySelector(s);
+const MODELS = { tiny:"onnx-community/whisper-tiny", base:"onnx-community/whisper-base", small:"onnx-community/whisper-small" };
+const SR = 16000;
+let file = null, asr = null, asrKey = "", segs = [], stop = false, running = false;
+
+// Onda: fa da barra di avanzamento
+const wave = $("#wave"), N = 44;
+for (let i = 0; i < N; i++) {
+  const b = document.createElement("i");
+  b.style.height = (14 + 86 * Math.abs(Math.sin(i * .6) * Math.cos(i * .21 + 1))) + "%";
+  wave.appendChild(b);
+}
+const setProg = f => [...wave.children].forEach((b, i) => b.classList.toggle("on", i < Math.round(f * N)));
+const setStatus = (t, err) => { const s = $("#status"); s.textContent = t; s.className = err ? "err" : ""; };
+
+$("#file").addEventListener("change", e => {
+  file = e.target.files[0] || null;
+  if (!file) return;
+  $("#fname").textContent = file.name;
+  $("#fsize").textContent = (file.size / 1048576).toFixed(1) + " MB";
+  $("#go").disabled = false;
+  setProg(0); setStatus("");
+});
+
+async function load(key, dev) {
+  const parts = {};
+  const dtype = dev === "webgpu"
+    ? { encoder_model: "fp32", decoder_model_merged: "q4" }
+    : { encoder_model: "fp32", decoder_model_merged: "q8" };
+  asr = await pipeline("automatic-speech-recognition", MODELS[key], {
+    device: dev, dtype,
+    progress_callback: p => {
+      if (p.status !== "progress" || !p.total) return;
+      parts[p.file] = [p.loaded, p.total];
+      let l = 0, t = 0;
+      for (const v of Object.values(parts)) { l += v[0]; t += v[1]; }
+      setProg(l / t);
+      setStatus("Scarico il modello… " + Math.round(100 * l / t) + "%");
+    }
+  });
+  asrKey = key + ":" + dev;
+}
+
+async function ensure() {
+  const k = $("#model").value;
+  if (asr && asrKey.startsWith(k + ":")) return;
+  asr = null;
+  setStatus("Preparo il modello…");
+  for (const dev of navigator.gpu ? ["webgpu", "wasm"] : ["wasm"]) {
+    try { await load(k, dev); return; } catch (e) { console.warn(dev, e); asr = null; }
+  }
+  throw new Error("Modello non caricato. La prima volta serve una connessione internet.");
+}
+
+async function decode(f) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
+  const ab = await ctx.decodeAudioData(await f.arrayBuffer());
+  ctx.close();
+  const n = ab.numberOfChannels, out = new Float32Array(ab.length);
+  for (let c = 0; c < n; c++) {
+    const d = ab.getChannelData(c);
+    for (let i = 0; i < out.length; i++) out[i] += d[i] / n;
+  }
+  return out;
+}
+
+// Taglia i blocchi da 30 s nel punto più silenzioso degli ultimi 3 s, per non spezzare le parole
+function quiet(a, from, to) {
+  let best = to, min = Infinity;
+  for (let i = from; i < to - 1600; i += 800) {
+    let m = 0;
+    for (let j = 0; j < 1600; j++) m += Math.abs(a[i + j]);
+    if (m < min) { min = m; best = i + 800; }
+  }
+  return best;
+}
+
+async function tx(x) {
+  const v = $("#lang").value;
+  const opt = { language: v === "auto" ? null : v, task: "transcribe", return_timestamps: true };
+  try { return await asr(x, opt); }
+  catch (e) {
+    if (!asrKey.endsWith(":webgpu")) throw e;
+    await load($("#model").value, "wasm");
+    return await asr(x, opt);
+  }
+}
+
+function busy(b) {
+  running = b;
+  $("#go").textContent = b ? "Ferma" : "Trascrivi";
+  $("#go").disabled = false;
+  $("#file").disabled = b; $("#lang").disabled = b; $("#model").disabled = b;
+}
+
+async function run() {
+  if (running) { stop = true; return; }
+  if (!file) return;
+  busy(true); stop = false; segs = []; $("#out").value = ""; setProg(0);
+  ["copy", "txt", "srt"].forEach(i => $("#" + i).disabled = true);
+  let lock = null;
+  try { lock = await navigator.wakeLock?.request("screen"); } catch {}
+  try {
+    setStatus("Leggo l’audio…");
+    const audio = await decode(file);
+    await ensure();
+    setProg(0);
+    let s = 0;
+    while (s < audio.length && !stop) {
+      let e = Math.min(s + 30 * SR, audio.length);
+      if (e < audio.length) e = quiet(audio, e - 3 * SR, e);
+      if (e - s < 4800) break;
+      const r = await tx(audio.subarray(s, e));
+      const off = s / SR;
+      for (const c of r.chunks || []) {
+        const t = c.text.trim();
+        if (!t) continue;
+        segs.push({ a: (c.timestamp[0] ?? 0) + off, b: (c.timestamp[1] ?? (e - s) / SR) + off, t });
+      }
+      $("#out").value = segs.map(x => x.t).join(" ");
+      s = e;
+      setProg(s / audio.length);
+      setStatus("Trascrivo… " + Math.round(100 * s / audio.length) + "%");
+    }
+    setStatus(stop ? "Interrotto: hai il testo fino a qui." : "Fatto.");
+  } catch (err) {
+    console.error(err);
+    setStatus(err.message || "Qualcosa non ha funzionato. Riprova con un altro file.", true);
+  } finally {
+    try { await lock?.release(); } catch {}
+    busy(false);
+    if ($("#out").value) ["copy", "txt", "srt"].forEach(i => $("#" + i).disabled = false);
+  }
+}
+$("#go").addEventListener("click", run);
+
+const save = (name, txt) => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([txt], { type: "text/plain;charset=utf-8" }));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+};
+const base = () => (file ? file.name.replace(/\.[^.]+$/, "") : "trascrizione");
+const p2 = n => String(n).padStart(2, "0");
+const ts = t => `${p2(Math.floor(t / 3600))}:${p2(Math.floor(t % 3600 / 60))}:${p2(Math.floor(t % 60))},${String(Math.floor((t % 1) * 1000)).padStart(3, "0")}`;
+
+$("#txt").addEventListener("click", () => save(base() + ".txt", $("#out").value));
+$("#srt").addEventListener("click", () => save(base() + ".srt",
+  segs.map((x, i) => `${i + 1}\n${ts(x.a)} --> ${ts(x.b)}\n${x.t}\n`).join("\n")));
+$("#copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("#out").value); }
+  catch { $("#out").select(); document.execCommand("copy"); }
+  setStatus("Testo copiato.");
+});
+
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+</script>
+</body>
+</html>
